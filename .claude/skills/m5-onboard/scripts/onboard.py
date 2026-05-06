@@ -586,6 +586,16 @@ def _wait_for_any_usbmodem(current_port: str, timeout: float = 20.0) -> str | No
 # the floor; requirements.txt pins >= 4.11 for the version we test
 # against.
 _MIN_ESPTOOL = (4, 8)
+# 5.x has been observed to crash mid-`write_flash` on Cardputer-Adv
+# (native-USB ESP32-S3) with "Serial data stream stopped" followed
+# by a StopIteration in the SLIP reader during post-flash
+# watchdog_reset teardown. 4.11 flashes the same firmware to the
+# same device cleanly. The cap is exclusive — anything `< 5.0` is
+# fine. Lift this once 5.x has been validated end-to-end on the
+# board matrix and flash.py's "Hash of data verified" parser has
+# been re-confirmed against 5.x's stdout wording (which already
+# emits a deprecation warning for `write_flash`).
+_MAX_ESPTOOL_EXCLUSIVE = (5, 0)
 
 
 def _pyserial_present() -> bool:
@@ -764,7 +774,15 @@ def _preflight() -> None:
     """
     pyserial_ok = _pyserial_present()
     esp_ver = _esptool_version()
-    esp_ok = esp_ver is not None and esp_ver >= _MIN_ESPTOOL
+    esp_ok = (
+        esp_ver is not None
+        and esp_ver >= _MIN_ESPTOOL
+        and esp_ver < _MAX_ESPTOOL_EXCLUSIVE
+    )
+    esp_spec = "esptool>={}.{},<{}.{}".format(
+        _MIN_ESPTOOL[0], _MIN_ESPTOOL[1],
+        _MAX_ESPTOOL_EXCLUSIVE[0], _MAX_ESPTOOL_EXCLUSIVE[1],
+    )
 
     # Happy path: everything resolves and is recent enough.
     if pyserial_ok and esp_ok:
@@ -786,14 +804,25 @@ def _preflight() -> None:
         install_spec.append("pyserial")
     if esp_ver is None:
         missing.append("esptool (not importable)")
-        install_spec.append("esptool>={}.{}".format(*_MIN_ESPTOOL))
-    elif not esp_ok:
+        install_spec.append(esp_spec)
+    elif esp_ver < _MIN_ESPTOOL:
         missing.append(
-            "esptool {} (need >= {}.{})".format(
-                _esptool_version_str(), *_MIN_ESPTOOL
+            "esptool {} (need >= {}.{}, < {}.{})".format(
+                _esptool_version_str(),
+                *_MIN_ESPTOOL,
+                *_MAX_ESPTOOL_EXCLUSIVE,
             )
         )
-        install_spec.append("esptool>={}.{}".format(*_MIN_ESPTOOL))
+        install_spec.append(esp_spec)
+    elif esp_ver >= _MAX_ESPTOOL_EXCLUSIVE:
+        # Too new — known to crash mid-flash on Cardputer-Adv. Pin down.
+        missing.append(
+            "esptool {} (need < {}.{} — see comment in onboard.py "
+            "near _MAX_ESPTOOL_EXCLUSIVE)".format(
+                _esptool_version_str(), *_MAX_ESPTOOL_EXCLUSIVE,
+            )
+        )
+        install_spec.append(esp_spec)
 
     sys.stderr.write("Missing or stale Python dependencies:\n")
     for m in missing:
@@ -880,6 +909,23 @@ def _preflight() -> None:
                 _MIN_ESPTOOL[0],
                 _MIN_ESPTOOL[1],
                 sys.executable,
+            )
+        )
+        sys.exit(2)
+    if new_ver >= _MAX_ESPTOOL_EXCLUSIVE:
+        sys.stderr.write(
+            "After pip install, esptool is {} but we cap at < {}.{}.\n"
+            "5.x crashes mid-write_flash on Cardputer-Adv (see\n"
+            "_MAX_ESPTOOL_EXCLUSIVE in onboard.py for details).\n"
+            "Pin down with:\n"
+            "  {} -m pip install --user 'esptool>={}.{},<{}.{}'\n"
+            "then re-run this command.\n".format(
+                _esptool_version_str(),
+                _MAX_ESPTOOL_EXCLUSIVE[0],
+                _MAX_ESPTOOL_EXCLUSIVE[1],
+                sys.executable,
+                _MIN_ESPTOOL[0], _MIN_ESPTOOL[1],
+                _MAX_ESPTOOL_EXCLUSIVE[0], _MAX_ESPTOOL_EXCLUSIVE[1],
             )
         )
         sys.exit(2)

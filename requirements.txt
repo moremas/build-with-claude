@@ -13,6 +13,20 @@
 # it's missing from the user's environment, so attendees with
 # unconfigured machines still get a one-command experience.
 #
+# Why the upper bound on esptool? 5.x crashes mid-`write_flash` on
+# Cardputer-Adv (ESP32-S3, native USB) with `Serial data stream
+# stopped: Possible serial noise or corruption` followed by a
+# StopIteration in the SLIP reader during the post-flash
+# watchdog_reset teardown. 4.11 flashes the same firmware to the
+# same device cleanly. Pin until 5.x is validated end-to-end on
+# the full board matrix and `flash.py`'s success-marker parser is
+# confirmed against 5.x's stdout wording.
+#
 # To install everything explicitly (CI, reproducible setup):
 #   python3 -m pip install --user -r requirements.txt
-esptool>=4.11
+# On macOS with Homebrew Python this fails with PEP 668's
+# "externally-managed-environment". Use a venv:
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+# and run onboard.py with `.venv/bin/python` so the preflight sees
+# the right interpreter.
+esptool>=4.11,<5
