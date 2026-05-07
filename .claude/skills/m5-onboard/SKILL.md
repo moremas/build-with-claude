@@ -157,6 +157,21 @@ A pinned `pyserial 3.5` ships under `scripts/vendor/` (BSD-3-Clause, Apache-comp
 
 Non-interactive callers (piped stdin, CI) skip the prompt and get a `python -m pip install --user esptool` hint instead.
 
+**Linux + PEP 668 (the `externally-managed-environment` policy):** modern Debian (12+), Ubuntu (23.04+), Arch, and Fedora drop a marker file under `/usr/lib/python3.X/` that causes pip to refuse `--user` installs outside a venv (you'll see `error: externally-managed-environment`). The system Python may also ship without `pip` at all — Arch packages it separately as `python-pip`. The auto-install prompt fails in that environment. Recipe that's been verified to work:
+
+```bash
+python3 -m venv ~/.cache/m5-onboard-venv
+~/.cache/m5-onboard-venv/bin/pip install esptool
+mkdir -p ~/.local/bin
+ln -sf ~/.cache/m5-onboard-venv/bin/esptool ~/.local/bin/esptool
+# Then invoke onboard.py with the venv's Python — the preflight's
+# find_spec("esptool") runs against sys.executable, so /usr/bin/python3
+# (without esptool) still fails the check even with the symlink in place.
+~/.cache/m5-onboard-venv/bin/python scripts/onboard.py --apps buddy
+```
+
+The symlink covers `detect.py` and `flash.py`, which shell out to a `esptool` binary on PATH (not `python -m esptool`). Without it those steps fail even when the venv's Python successfully imports the module.
+
 **Fallback if someone prunes `scripts/vendor/`:**
 
 The same preflight path also re-installs pyserial via pip if the vendor copy is gone. This handles the case where someone downloaded a source-only zip that excluded vendor, or manually trimmed the repo to save space.
@@ -173,10 +188,14 @@ The skill runs on macOS, Linux, and Windows. Non-obvious bits:
   - macOS: `/dev/cu.usbmodem1101` (native USB) or `/dev/cu.usbserial-XXXX` (CH9102)
   - Linux: `/dev/ttyACM0` (native USB) or `/dev/ttyUSB0` (UART bridge)
   - Windows: `COM3`, `COM4`, etc. (Device Manager → Ports if unsure)
-- **Linux permissions — read this before blaming hardware.** On most distros, accessing `/dev/ttyUSB*` / `/dev/ttyACM*` without sudo requires group membership (`dialout` on Debian/Ubuntu/Arch, `uucp` on Fedora). Symptom: `detect.py` finds the port, but the flash step fails with `Permission denied` or `Could not open port`. Fix once, long-term:
+- **Linux permissions — read this before blaming hardware.** On most distros, accessing `/dev/ttyUSB*` / `/dev/ttyACM*` without sudo requires group membership. The group depends on the distro's udev rules (commonly `dialout` on Debian/Ubuntu, `uucp` on Arch and Fedora, but it varies — don't trust the distro alone). Symptom: `detect.py` finds the port, but the flash step fails with `Permission denied` or `Could not open port`. Check what group actually owns the device, then add yourself to it:
   ```bash
-  sudo usermod -aG dialout $USER
+  ls -l /dev/ttyACM* /dev/ttyUSB* 2>/dev/null  # third column is the group
+  sudo usermod -aG <group> $USER               # e.g. dialout, uucp, plugdev
   # log out / log back in — group change only takes effect for new sessions
+  # OR use `sg <group> -c "..."` to pick up the group in the current shell
+  # without logging out (useful for one-off provisioning before a relog):
+  sg <group> -c "python3 scripts/onboard.py --apps buddy"
   ```
   `sudo python3 scripts/onboard.py ...` works as a one-off but adding the group membership is strictly better because pyserial's port-open in user mode succeeds cleanly from then on.
 - **Windows PATH gotchas.** Python's `pip install --user esptool` lands the executable in `%APPDATA%\Python\Python3XX\Scripts\`. If that directory isn't on PATH, `pip` prints a warning and nothing else picks up the install. `detect.py` looks there directly as a backstop, so the skill still works even without PATH fixed. But if you're invoking esptool outside the skill (or hitting "esptool not found" errors from other tools), either:

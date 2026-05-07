@@ -90,8 +90,22 @@ You need **Python 3.10+**, **git**, and **Claude Code** on your laptop. `pyseria
 Bootstrap if needed:
 
 - **macOS** — `python3` usually pre-installed; if not, `brew install python`
-- **Linux (Debian/Ubuntu)** — `sudo apt-get install -y python3 python3-pip git`
+- **Linux (Debian/Ubuntu)** — `sudo apt-get install -y python3 python3-pip python3-venv git`
+- **Linux (Arch)** — `sudo pacman -S --needed python python-pip git`
+- **Linux (Fedora)** — `sudo dnf install -y python3 python3-pip git`
 - **Windows** — `winget install -e --id Python.Python.3.13` and `winget install -e --id Git.Git`
+
+**Linux + PEP 668 (the `externally-managed-environment` policy):** modern Debian (12+), Ubuntu (23.04+), Arch, and Fedora drop a marker file under `/usr/lib/python3.X/` that tells pip to refuse global installs — `pip install --user` outside a virtualenv fails with `error: externally-managed-environment`. The cleanest fix is a dedicated venv that the skill can use:
+
+```bash
+python3 -m venv ~/.cache/m5-onboard-venv
+~/.cache/m5-onboard-venv/bin/pip install -r requirements.txt
+# then invoke the skill scripts with that venv's Python:
+~/.cache/m5-onboard-venv/bin/python .claude/skills/m5-onboard/scripts/onboard.py --apps buddy
+# (and symlink the binary so detect.py/flash.py find it on PATH)
+mkdir -p ~/.local/bin
+ln -s ~/.cache/m5-onboard-venv/bin/esptool ~/.local/bin/esptool
+```
 
 **Windows + older boards only:** the CH9102 USB-UART driver is needed for Basic / Fire / Core2 / StickC. Download from [WCH](https://www.wch.cn/downloads/CH343SER_EXE.html). Cardputer-Adv and CoreS3 use the in-box composite-USB driver and need nothing extra.
 
