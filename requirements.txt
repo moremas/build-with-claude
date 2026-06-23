@@ -16,3 +16,8 @@
 # To install everything explicitly (CI, reproducible setup):
 #   python3 -m pip install --user -r requirements.txt
 esptool>=4.11
+
+# bleak is the BLE central used only by buddy/scripts/quota_push.py to
+# feed real usage-quota figures to the Cardputer buddy. Not needed for
+# flashing/onboarding — install it only if you want the quota bars.
+bleak>=0.21

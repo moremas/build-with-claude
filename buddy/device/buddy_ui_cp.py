@@ -50,13 +50,12 @@ to size 4 for cross-room readability.
     y=84       "and pick this one"
     y=112..134 hint strip "Q = Exit" (centered)
 
-  Connected with heartbeat:
-    y=0..20    header
-    y=26       identity band (name + owner)
-    y=42       queue line  ("Q: Nrun Nwait Ntot")
-    y=58       tokens line ("Today: N,NNN tok")
-    y=74       status msg (if hb["msg"] is set)
-    y=90..108  prompt box (when a permission is pending)
+  Connected with heartbeat (no identity band — reused for a 3rd bar):
+    y=0..20    header ("Claude Buddy" + status)
+    y=24       "5h" quota bar     (100 - five_h_util)
+    y=48       "Week" quota bar   (100 - week_util)
+    y=72       "Sonnet" quota bar (100 - sonnet_util; hidden while a prompt is up)
+    y=74..108  prompt box (when a permission is pending)
     y=112..134 hint strip (Y once / N deny / Q exit columns)
 
   Passkey overlay (during BLE pairing, layered over main):
@@ -84,6 +83,38 @@ _LCD = M5.Lcd
 
 _W = 240
 _H = 135
+
+# Usage bars render the *real* Claude quota, which only the host knows.
+# The device is BLE-only (claude_buddy.py takes WiFi down for radio
+# coexistence) so it can't query usage itself — the host companion
+# (scripts/quota_push.py, backed by `codexbar`) sends, per heartbeat:
+#   five_h_util / week_util / sonnet_util   - utilization % (0..100, "used")
+#                                             -> bar length = 100 - util
+#   five_h_color / week_color / sonnet_color - RGB int -> bar fill colour
+# The host derives the colour from the codexbar pace stage (and a
+# remaining-% fallback for windows with no pace); the device just paints
+# it. Keeping the stage->colour map host-side means colours can be retuned
+# without re-flashing.
+#
+# Claude.app's own heartbeat carries none of these, so on that link the
+# bars read "--". See buddy/references/protocol.md.
+
+
+def _has_cjk(s: str) -> bool:
+    """True if s contains any character outside the DejaVu9 Latin range."""
+    return any(ord(c) > 0x7E for c in s)
+
+
+def _set_font_auto(text: str) -> int:
+    """Set EFontJA24 for CJK text, DejaVu9 otherwise. Returns px height."""
+    if _has_cjk(text):
+        try:
+            _LCD.setFont(_LCD.FONTS.EFontJA24)
+            return 24
+        except AttributeError:
+            pass
+    _LCD.setFont(_LCD.FONTS.DejaVu9)
+    return 10
 
 
 def _right(y: int, pad: int, text: str) -> int:
@@ -113,6 +144,14 @@ class BuddyUI:
         self._prompt = None
         self._identity_name = "Buddy"
         self._identity_owner = ""
+        # Cache last footer values so _draw_connected_main can repaint
+        # the footer after _draw_main's fillRect wipes y=96..110.
+        self._last_stats = {}
+        self._last_battery = {}
+        # Cache last rendered footer strings to skip redraws when unchanged.
+        # Set to None when the footer area is wiped so the next draw is forced.
+        self._last_footer_left = None
+        self._last_footer_right = None
         _LCD.fillScreen(BLACK)
         # setFont is sticky across setTextSize calls, so we pick
         # DejaVu9 once at init. Wrapped in try/except so a future
@@ -171,19 +210,34 @@ class BuddyUI:
         prev_pending = bool(self._prompt)
         self._last = hb
         self._prompt = hb.get("prompt")
-        self._draw_main()
-        # Hint strip content depends on prompt-pending state; repaint
-        # when it flips so the Y/N keys surface only when useful.
-        if bool(self._prompt) != prev_pending:
+        curr_pending = bool(self._prompt)
+        # Steady-state connected heartbeat: skip the full clear+redraw in
+        # _draw_main and just update the bar rows in-place.  This eliminates
+        # the black flash that _draw_main's fillRect causes on every tick.
+        # Fall through to _draw_main only on transitions (prompt appear/
+        # disappear) or non-connected states, where a full repaint is needed.
+        if (
+            self._connection_state not in ("advertising", "disconnected")
+            and self._passkey is None
+            and not self._unpair_prompt
+            and curr_pending == prev_pending
+        ):
+            self._draw_data_rows()
+        else:
+            self._draw_main()
+        if curr_pending != prev_pending:
             self.restore_button_hints()
 
     def update_identity(self, name: str, owner: str):
+        # The connected layout no longer renders an identity band — that
+        # row is reused for the Sonnet bar, and the header already shows
+        # "Claude Buddy". Just remember the values.
         self._identity_name = name or "Buddy"
         self._identity_owner = owner or ""
-        if self._connection_state not in ("advertising", "disconnected"):
-            self._draw_identity()
 
     def update_footer(self, stats: dict, battery: dict):
+        self._last_stats = stats
+        self._last_battery = battery
         # Stats footer only appears during the connected layout.
         if self._connection_state not in ("advertising", "disconnected"):
             self._draw_footer(stats, battery)
@@ -283,28 +337,22 @@ class BuddyUI:
             return ("OFF", RED)
         return ("ADV", CYAN)
 
-    def _draw_identity(self):
-        name = (self._identity_name or "Buddy")[:22]
-        owner = self._identity_owner or ""
-        _LCD.fillRect(0, 24, _W, 14, BLACK)
-        _LCD.setTextSize(1)
-        _LCD.setTextColor(ORANGE, BLACK)
-        _LCD.drawString(name, 6, 26)
-        if owner:
-            _LCD.setTextColor(GRAY_MID, BLACK)
-            # Place owner text just after name with an 8 px gutter.
-            x = 6 + _LCD.textWidth(name) + 8
-            suffix = "<- " + owner
-            # Clip the owner suffix to whatever fits before the right
-            # margin (the status icon is in the header, not here).
-            while x + _LCD.textWidth(suffix) > _W - 6 and len(suffix) > 1:
-                suffix = suffix[:-1]
-            _LCD.drawString(suffix, x, 26)
-
     def _draw_main(self):
-        # Clear from just under the header hairline down to just above
-        # the hint strip hairline — leaves those dividers intact.
-        _LCD.fillRect(0, 21, _W, 90, BLACK)
+        # In connected state: clear only the content band (y=21..95),
+        # leaving the footer band (y=96..110) untouched. This prevents
+        # rapid heartbeats from flickering the footer black — the footer
+        # is only written by explicit _draw_footer calls via update_footer.
+        # In all other states: clear the full band including the footer,
+        # since those layouts own the entire area.
+        if (
+            not self._unpair_prompt
+            and self._passkey is None
+            and self._connection_state not in ("advertising", "disconnected")
+        ):
+            _LCD.fillRect(0, 21, _W, 75, BLACK)  # y=21..95, footer spared
+        else:
+            self._invalidate_footer()
+            _LCD.fillRect(0, 21, _W, 90, BLACK)  # y=21..110, full clear
         # Overlays take precedence over the layout under them. The
         # unpair prompt outranks the passkey because they should never
         # both be live at once (passkey only fires during a real
@@ -333,38 +381,97 @@ class BuddyUI:
         _LCD.drawString("Settings > Buddy", 6, 66)
         _LCD.drawString("and pick this one", 6, 84)
 
-    def _draw_connected_main(self):
-        self._draw_identity()
-        hb = self._last
+    def _bar_color(self, color):
+        """Bar fill colour. The host (scripts/quota_push.py) resolves the
+        codexbar pace stage — and the remaining-% fallback for windows with
+        no pace — into an RGB int and sends it per bar, so the device just
+        paints what it's told. GRAY_MID is only a defensive default for a
+        bar with data but no colour (shouldn't happen: the host always pairs
+        a colour with a util)."""
+        return GRAY_MID if color is None else color
+
+    def _draw_bar(self, label: str, pct, y: int, color: int):
+        """Draw a labeled horizontal progress bar showing remaining quota.
+
+        pct is the *remaining* percentage (0..100); pct=100 means the bar is
+        full. pct=None means "no data yet" — we draw an empty bar and a "--"
+        label rather than inventing a number. `color` is the fill colour,
+        chosen by the caller (pace stage, or remaining-% fallback).
+
+        Draws the filled and empty portions of the bar in a single pass (no
+        intermediate full-gray state) to avoid visible flicker on in-place
+        updates.  The percentage text area is always cleared to a fixed width
+        before writing so variable-width strings ("9%" vs "100%") don't leave
+        stale pixels from a previous wider value.
+        """
         _LCD.setTextSize(1)
-        running = hb.get("running", 0)
-        waiting = hb.get("waiting", 0)
-        total = hb.get("total", 0)
+        _LCD.setTextColor(GRAY_MID, BLACK)
+        _LCD.drawString(label, 6, y)
+        # Clear a 36 px slot at the right edge for the pct label so that
+        # a shorter string ("9%" / "--") always overwrites a longer one ("100%").
+        _LCD.fillRect(_W - 38, y, 32, 10, BLACK)
+        if pct is None:
+            pct_str = "--"
+            fill_pct = 0
+        else:
+            fill_pct = max(0, min(100, pct))
+            pct_str = "{}%".format(fill_pct)
         _LCD.setTextColor(WHITE, BLACK)
-        queue = "Q: {}run {}wait {}tot".format(running, waiting, total)
-        # Clip to screen width so large numbers don't wrap.
-        while _LCD.textWidth(queue) > _W - 12 and len(queue) > 1:
-            queue = queue[:-1]
-        _LCD.drawString(queue, 6, 42)
-        tokens_today = hb.get("tokens_today", 0)
-        _LCD.setTextColor(CYAN, BLACK)
-        tok = "{:,}".format(tokens_today).replace(",", "'")
-        tok_line = "Today: " + tok + " tok"
-        while _LCD.textWidth(tok_line) > _W - 12 and len(tok_line) > 1:
-            tok_line = tok_line[:-1]
-        _LCD.drawString(tok_line, 6, 58)
-        # When a prompt is active the prompt box takes over the lower
-        # third of the panel — skip the generic msg line so they don't
-        # overlap. When no prompt is pending, msg fills the same row.
+        _LCD.drawString(pct_str, _right(y, 6, pct_str), y)
+        bar_y = y + 13
+        bar_w = _W - 12
+        fill_w = int(bar_w * fill_pct // 100)
+        # Draw filled portion then empty portion in one pass — never shows
+        # an intermediate all-gray state, so the bar updates without flash.
+        if fill_w > 0:
+            _LCD.fillRect(6, bar_y, fill_w, 8, color)
+        if fill_w < bar_w:
+            _LCD.fillRect(6 + fill_w, bar_y, bar_w - fill_w, 8, GRAY_DIM)
+
+    def _data_pcts(self):
+        """Return (h5, wk, sonnet) remaining % (0..100), each None if unknown.
+
+        `five_h_util` / `week_util` / `sonnet_util` are utilization
+        percentages (0..100, "used") the companion sends from `codexbar`
+        (primary / secondary / tertiary). We display *remaining*, i.e.
+        100 - utilization. An absent field yields None — that bar renders a
+        "--" no-data state rather than a fabricated number.
+        """
+        hb = self._last
+
+        def _rem(key):
+            v = hb.get(key)
+            return None if v is None else max(0, min(100, 100 - int(v)))
+
+        return _rem("five_h_util"), _rem("week_util"), _rem("sonnet_util")
+
+    def _draw_data_rows(self):
+        """Update the quota bars in-place without clearing the full content
+        area, so the screen never goes black between heartbeats.
+
+        Three rows (5h / Week / Sonnet) at y=24/48/72 — the identity band
+        was dropped to make vertical room. A pending prompt occupies the
+        Sonnet row's space (prompt box y=74..108), so we hide Sonnet then.
+
+        Bar length is remaining quota; bar colour is whatever the host sent
+        (`*_color`, derived from the codexbar pace stage on the Mac side).
+        """
+        hb = self._last
+        h5, wk, snt = self._data_pcts()
+        self._draw_bar("5h", h5, 24, self._bar_color(hb.get("five_h_color")))
+        self._draw_bar("Week", wk, 48, self._bar_color(hb.get("week_color")))
         if self._prompt:
             self._draw_prompt_box(self._prompt)
         else:
-            msg = hb.get("msg", "")
-            if msg:
-                _LCD.setTextColor(GRAY_MID, BLACK)
-                while _LCD.textWidth(msg) > _W - 12 and len(msg) > 1:
-                    msg = msg[:-1]
-                _LCD.drawString(msg, 6, 74)
+            self._draw_bar("Sonnet", snt, 72, self._bar_color(hb.get("sonnet_color")))
+
+    def _draw_connected_main(self):
+        self._draw_data_rows()
+        # After an overlay exits back to connected, _draw_main's full-clear
+        # fillRect wiped the footer — restore it, but not while a prompt box
+        # (y=74..108) overlaps the footer band (y=96..110).
+        if not self._prompt and (self._last_stats or self._last_battery):
+            self._draw_footer(self._last_stats, self._last_battery)
 
     def _draw_prompt_box(self, prompt: dict):
         # Orange-bordered box for the pending permission. y=74..109
@@ -377,18 +484,31 @@ class BuddyUI:
         _LCD.setTextSize(1)
         _LCD.setTextColor(ORANGE, BLACK)
         tool_line = "PERM: " + prompt.get("tool", "?")
+        h_tool = _set_font_auto(tool_line)
         while _LCD.textWidth(tool_line) > _W - 14 and len(tool_line) > 1:
             tool_line = tool_line[:-1]
         _LCD.drawString(tool_line, 7, 78)
+        if h_tool > 10:
+            _LCD.setFont(_LCD.FONTS.DejaVu9)
         hint = prompt.get("hint", "")
+        h_hint = _set_font_auto(hint)
         _LCD.setTextColor(CREAM, BLACK)
+        # CJK hint at 24 px: shift up so it fits in the box (y+24 <= 109).
+        hint_y = 82 if h_hint > 10 else 94
         while _LCD.textWidth(hint) > _W - 14 and len(hint) > 1:
             hint = hint[:-1]
-        _LCD.drawString(hint, 7, 94)
+        _LCD.drawString(hint, 7, hint_y)
+        if h_hint > 10:
+            _LCD.setFont(_LCD.FONTS.DejaVu9)
+
+    def _invalidate_footer(self):
+        self._last_footer_left = None
+        self._last_footer_right = None
 
     def _draw_unpair_overlay(self):
         if not self._unpair_prompt:
             return
+        self._invalidate_footer()
         _LCD.fillRect(0, 21, _W, 90, BLACK)
         _LCD.setTextSize(1)
         _LCD.setTextColor(RED, BLACK)
@@ -405,6 +525,7 @@ class BuddyUI:
     def _draw_passkey_overlay(self):
         if self._passkey is None:
             return
+        self._invalidate_footer()
         _LCD.fillRect(0, 21, _W, 90, BLACK)
         _LCD.setTextSize(1)
         _LCD.setTextColor(ORANGE, BLACK)
@@ -423,23 +544,44 @@ class BuddyUI:
     def _draw_footer(self, stats: dict, battery: dict):
         # Thin stats line between main panel and hint strip, only in
         # the connected layout. y=96..110 (14 tall) holds one 10-px row.
-        _LCD.fillRect(0, 96, _W, 15, BLACK)
+        #
+        # Each side is redrawn independently and only when its string
+        # changes — avoids the black flash caused by fillRect+drawString
+        # on every periodic update when the values are stable.
+        # _invalidate_footer() resets the cache whenever a full-clear
+        # fillRect wipes this region so the next call forces a redraw.
         _LCD.setTextSize(1)
-        _LCD.setTextColor(GRAY_MID, BLACK)
         left = "Lv.{} a:{} d:{}".format(
             stats.get("lvl", 0),
             stats.get("appr", 0),
             stats.get("deny", 0),
         )
-        _LCD.drawString(left, 6, 98)
         pct = max(0, min(100, battery.get("pct", 0)))
-        label = "{}%".format(pct)
-        _LCD.setTextColor(CREAM, BLACK)
-        # Right-aligned with 6 px of padding — and critically,
-        # computed from textWidth, not a char-count estimate, so
-        # proportional-font surprises (e.g. '%' being 8 px wide)
-        # don't push the label off-screen and trigger a line wrap.
-        _LCD.drawString(label, _right(98, 6, label), 98)
+        rem = battery.get("remaining_min")
+        if rem is not None:
+            if rem >= 120:
+                right = "{}% ~{}h".format(pct, rem // 60)
+            elif rem >= 60:
+                right = "{}% ~{}h{}m".format(pct, rem // 60, rem % 60)
+            else:
+                right = "{}% ~{}m".format(pct, rem)
+        else:
+            right = "{}%".format(pct)
+
+        if left != self._last_footer_left:
+            _LCD.fillRect(0, 96, (_W * 2) // 3, 15, BLACK)
+            _LCD.setTextColor(GRAY_MID, BLACK)
+            _LCD.drawString(left, 6, 98)
+            self._last_footer_left = left
+
+        if right != self._last_footer_right:
+            _LCD.fillRect((_W * 2) // 3, 96, _W // 3 + 1, 15, BLACK)
+            _LCD.setTextColor(CREAM, BLACK)
+            # Right-aligned with 6 px of padding — computed from textWidth,
+            # not a char-count estimate, so proportional-font surprises
+            # (e.g. '%' being 8 px wide) don't push the label off-screen.
+            _LCD.drawString(right, _right(98, 6, right), 98)
+            self._last_footer_right = right
 
     def _redraw_chrome(self):
         _LCD.fillScreen(BLACK)

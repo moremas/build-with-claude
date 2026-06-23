@@ -68,8 +68,8 @@ A message **without** a `cmd` field is a heartbeat. Recognized fields:
   "waiting": N,        # awaiting permission
   "msg": "string",     # flavor text
   "entries": N,        # history entries
-  "tokens": N,         # this turn
-  "tokens_today": N,   # today total
+  "tokens": N,         # cumulative tokens (session-scoped; see note)
+  "tokens_today": N,   # cumulative tokens today
   "prompt": {          # optional; present when waiting > 0
     "id": "...",
     "tool": "Bash",
@@ -80,6 +80,60 @@ A message **without** a `cmd` field is a heartbeat. Recognized fields:
 
 Heartbeats arrive ~every 10 s while connected. No response is expected;
 the device updates its UI silently.
+
+This is the **complete** field set — confirmed by a live capture from
+Claude.app's Hardware Buddy (Cardputer-Adv):
+
+```
+keys: ['entries', 'msg', 'running', 'tokens', 'tokens_today', 'total', 'waiting']
+```
+
+> A note on `tokens`: protocol.md historically called it "this turn",
+> but the live capture showed `tokens` (134704) > `tokens_today` (45665),
+> so it is **not** per-turn — it's a larger cumulative counter (session
+> or rolling). Treat its exact window as unspecified.
+
+### Quota fields (from the BLE companion, not Claude.app)
+
+Claude.app's heartbeat contains **no** quota/utilization/limit/reset
+field, and the device is BLE-only so it can't query usage itself. The
+on-device "5h / Week / Sonnet" bars are instead fed by a host companion,
+`scripts/quota_push.py` (backed by `codexbar --provider anthropic
+--format json`), which writes extra heartbeat fields:
+
+```
+{
+  "five_h_util": N,    # codexbar usage.primary.usedPercent   (5-hour)
+  "week_util": N,      # codexbar usage.secondary.usedPercent (7-day, all)
+  "sonnet_util": N,    # codexbar usage.tertiary.usedPercent  (7-day, Sonnet)
+  "five_h_color": C,   # RGB int (0xRRGGBB) for the 5h bar fill
+  "week_color": C,     # RGB int for the Week bar fill
+  "sonnet_color": C    # RGB int for the Sonnet bar fill
+}
+```
+
+The `*_util` values are utilization percentages (0..100, "used"); the
+codexbar mapping was verified against the labeled usage API
+(`primary`==`five_hour`, `secondary`==`seven_day`,
+`tertiary`==`seven_day_sonnet`). The device renders *remaining* =
+`100 - util` for the **bar length**, and shows `--` for any field it
+hasn't received (e.g. on the Claude.app link, which sends none).
+
+The `*_color` values are **plain RGB ints the device paints directly** —
+no colour logic on the device. The companion resolves them host-side from
+the codexbar **pace stage** (`farBehind`…`farAhead`) on a green→red ramp
+(`*Behind`/reserve = green … `*Ahead`/deficit = red), with a remaining-%
+fallback where there's no stage (Sonnet always; 5h/Week when codexbar
+omits pace early in a window). Keeping the stage→colour map on the host
+means colours can be retuned without re-flashing the device. All these
+names are in the device's heartbeat-detection set (`_HEARTBEAT_FIELDS` in
+`buddy_protocol.py`) so a quota-only message is recognized as a heartbeat.
+
+**Connection model:** the companion is the BLE central, like Claude.app,
+and a buddy accepts one central at a time — so the companion and
+Claude.app are mutually exclusive. Connect the companion for a live quota
+readout; quit it and reconnect from Claude.app for prompt-approval.
+Simultaneous use would require multi-connection support in the firmware.
 
 ## Outbound (device → host)
 

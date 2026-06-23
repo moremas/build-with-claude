@@ -71,18 +71,34 @@ import buddy_state
 import buddy_ui_cp as buddy_ui
 
 
-# ---- battery stub
+# ---- battery reader
 #
-# The Basic's buddy_app.py talks to an IP5306 over I2C(0, sda=21,
-# scl=22). The Cardputer-Adv has a completely different power
-# architecture — there's no IP5306, and the battery/USB state lives in
-# a chip we haven't wired up here. Stub the reader out so the protocol
-# and UI layers still see the shape they expect; the footer will show
-# "100%  USB" steady-state, which is a deliberate lie but a benign one.
-# A follow-up can swap this for the real AXP2101/AW9523 reader once
-# someone digs out the register map.
-def _stub_battery():
-    return {"pct": 100, "mV": 0, "mA": 0, "usb": True}
+# M5.Power on UIFlow 2.0 wraps the AXP2101 PMIC on the Cardputer-Adv.
+# Internal 120mAh + backpack 1400mAh are wired in parallel on the same
+# BAT rail, so AXP2101 sees them as a single ~1520mAh source.
+#
+# Remaining-time estimate: use getBatteryCurrent() if the AXP2101
+# returns a real value (> 0); otherwise fall back to a fixed 90mA
+# typical draw for BLE-active Cardputer-Adv. `remaining_min` is None
+# while charging so the UI can suppress the estimate.
+_TOTAL_MAH = 1520
+_FALLBACK_MA = 90
+
+def _read_battery():
+    p = M5.Power
+    pct = max(0, min(100, p.getBatteryLevel()))
+    charging = bool(p.isCharging())
+    mA = p.getBatteryCurrent()
+    if mA <= 0:
+        mA = _FALLBACK_MA
+    remaining_min = None if charging else int(_TOTAL_MAH * pct / 100 * 60 / mA)
+    return {
+        "pct": pct,
+        "mV": p.getBatteryVoltage(),
+        "mA": mA,
+        "usb": charging,
+        "remaining_min": remaining_min,
+    }
 
 
 # ---- key adapter
@@ -271,11 +287,11 @@ def run():
         ui=ui,
         chars=chars,
         ble=ble,
-        battery_reader=_stub_battery,
+        battery_reader=_read_battery,
     )
     proto_holder["p"] = proto
 
-    ui.update_footer(state.stats(), _stub_battery())
+    ui.update_footer(state.stats(), _read_battery())
     print("Claude Buddy up as", ble.advertised_name)
 
     # Keyboard: debounce 400 ms before polling so the key used to pick
@@ -326,7 +342,7 @@ def run():
                     proto.confirm_unpair()
                 elif not proto.send_permission("once"):
                     ui.flash_toast("Y: no prompt", buddy_ui.GRAY_DIM)
-                    ui.update_footer(state.stats(), _stub_battery())
+                    ui.update_footer(state.stats(), _read_battery())
                 last_toast_ms = time.ticks_ms()
             elif intent == _INTENT_DENY:
                 if unpair_active:
@@ -347,7 +363,7 @@ def run():
             now = time.ticks_ms()
             if time.ticks_diff(now, last_footer_ms) >= footer_interval:
                 state.tick_nap()
-                ui.update_footer(state.stats(), _stub_battery())
+                ui.update_footer(state.stats(), _read_battery())
                 last_footer_ms = now
             if last_toast_ms and time.ticks_diff(now, last_toast_ms) >= toast_dwell_ms:
                 ui.restore_button_hints()
