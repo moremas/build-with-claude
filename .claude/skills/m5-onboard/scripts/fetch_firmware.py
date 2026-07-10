@@ -163,6 +163,21 @@ VARIANTS = {
         "category": "cardputer",
         "entry_name": "UIFlow2.0 Cardputer-Adv",
         "version_suffix": "",
+        # PINNED to v2.4.8 — do not bump to "latest" without re-testing
+        # the keyboard end-to-end on real Adv hardware. UIFlow2 v2.4.9
+        # reworked the Cardputer-Adv keyboard subsystem: the keypad now
+        # lives entirely behind the TCA8418 I2C driver (hardware.Keyboard),
+        # and hardware.MatrixKeyboard — which the buddy bundle uses for
+        # input — stops reading keys on the Adv altogether. Symptom: the
+        # device flashes and boots into the launcher fine, the animation
+        # plays, but the arrow keys / Enter do nothing, so the user can
+        # never navigate to launch Claude Buddy. v2.4.8 is the last build
+        # where MatrixKeyboard still drives the Adv keypad (get_key()
+        # returns ';' ',' '.' '/' for the arrow cluster). Lift this pin
+        # only once the buddy bundle is ported to hardware.Keyboard, or M5
+        # restores MatrixKeyboard behavior on the Adv. See SKILL.md
+        # "Critical gotchas".
+        "version_pin": "v2.4.8",
     },
 }
 
@@ -194,9 +209,25 @@ def _pick_version(entry: dict, spec: dict) -> dict:
     Stable = version tag without rc/alpha/beta/hotfix. Falls back to
     the newest non-stable if nothing clean matches, so preview/RC
     releases are still flashable when that's all that exists.
+
+    A variant may set ``version_pin`` to force one exact published
+    version instead of "newest stable" — used when a newer firmware is
+    known to break the app bundle (see the cardputer-adv entry).
     """
     suffix = spec.get("version_suffix", "")
     must_not = spec.get("version_must_not", ())
+    pin = spec.get("version_pin")
+    if pin:
+        for v in entry.get("versions", []):
+            if v.get("published") is False:
+                continue
+            if (v.get("version") or "") == pin:
+                return v
+        raise SystemExit(
+            f"Pinned version {pin!r} for {entry.get('name')!r} not found "
+            f"among published versions. Available: "
+            f"{[v.get('version') for v in entry.get('versions', [])]}"
+        )
     candidates = []
     for v in entry.get("versions", []):
         if v.get("published") is False:
