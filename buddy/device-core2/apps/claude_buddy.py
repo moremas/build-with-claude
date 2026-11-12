@@ -88,7 +88,7 @@ def _battery():
         return {
             "pct": int(M5.Power.getBatteryLevel()),
             "mV": int(M5.Power.getBatteryVoltage()),
-            "mA": ma,
+            "mA": -ma,  # reference convention: negative = charging
             "usb": ma > _ON_BATTERY_MA,
         }
     except Exception as e:
@@ -127,6 +127,76 @@ def _tool_from_evt(raw):
                 break
     summary = " ".join(summary.split())[:120]
     return (str(found.get("name") or "?"), summary, found.get("id"))
+
+
+_VEL_KEY = "velr"  # NVS key (buddy namespace): last 8 response times, "12,5,30"
+_VEL_KEEP = 8
+
+
+def _median(values):
+    if not values:
+        return 0
+    v = sorted(values)
+    return v[len(v) // 2]
+
+
+class _Protocol(buddy_protocol.BuddyProtocol):
+    """Shared protocol, adjusted to the Hardware Buddy reference
+    (anthropics/claude-desktop-buddy REFERENCE.md) for the Core2:
+
+    - Status ack shaped ``{"ack":"status","ok":true,"data":{...}}``;
+      the shared module sends those fields at the top level.
+    - ``stats.vel`` is the median seconds-to-approve over the last 8
+      approvals answered on the device (0 = no data), as the reference
+      firmware reports it. The shared module sends approvals per
+      minute, which Claude Desktop shows as "--s".
+
+    Overriding here keeps the Cardputer bundle unchanged until it can be
+    tested; see buddy/device-core2/README.md "Status reply"."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._prompt_seen = (None, 0)  # (prompt id, ticks_ms first seen)
+        self._vel = []
+        try:
+            raw = buddy_state._get_str(_VEL_KEY, "")
+            self._vel = [int(x) for x in raw.split(",") if x][-_VEL_KEEP:]
+        except Exception as e:
+            print("claude_buddy: vel load failed:", e)
+
+    def _on_heartbeat(self, hb):
+        p = hb.get("prompt")
+        pid = p.get("id") if isinstance(p, dict) else None
+        if pid and pid != self._prompt_seen[0]:
+            self._prompt_seen = (pid, time.ticks_ms())
+        super()._on_heartbeat(hb)
+
+    def send_permission(self, decision):
+        pid = self._pending.get("id")
+        seen_id, seen_ms = self._prompt_seen
+        ok = super().send_permission(decision)
+        if ok and decision == "once" and pid and pid == seen_id:
+            secs = max(1, time.ticks_diff(time.ticks_ms(), seen_ms) // 1000)
+            self._vel = (self._vel + [min(secs, 65535)])[-_VEL_KEEP:]
+            try:
+                buddy_state._set_str(_VEL_KEY, ",".join(str(v) for v in self._vel))
+            except Exception as e:
+                print("claude_buddy: vel save failed:", e)
+        return ok
+
+    def confirm_unpair(self):
+        # Unpair wipes the shared stats; wipe ours with them.
+        super().confirm_unpair()
+        self._vel = []
+        buddy_state._erase(_VEL_KEY)
+
+    def _build_status_ack(self):
+        flat = super()._build_status_ack()
+        flat.pop("ack", None)
+        stats = dict(flat.get("stats") or {})
+        stats["vel"] = _median(self._vel)
+        flat["stats"] = stats
+        return {"ack": "status", "ok": True, "data": flat}
 
 
 def _drain_buttons(ms=400):
@@ -230,7 +300,7 @@ def run():
         on_state=on_state_change,
     )
 
-    proto = buddy_protocol.BuddyProtocol(
+    proto = _Protocol(
         state=state,
         ui=ui,
         chars=chars,
