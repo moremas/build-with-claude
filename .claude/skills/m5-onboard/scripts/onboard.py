@@ -958,18 +958,19 @@ def main() -> int:
     _preflight()
 
     # Safe to pull in everything that depends on pyserial / esptool now.
-    global detect, fetch_firmware, flash, install_apps, mpy_repl
+    global detect, fetch_firmware, flash, install_apps, mpy_repl, identify
     import detect
     import fetch_firmware
     import flash
     import install_apps
     import mpy_repl
+    import identify
 
     ap = argparse.ArgumentParser(description="Onboard an M5Stack end-to-end.")
     ap.add_argument("--port", help="Serial port (autodetected if omitted).")
     ap.add_argument(
         "--variant",
-        default="cardputer-adv",
+        default=None,
         choices=[
             "basic-16mb", "basic-4mb", "fire",
             "core2", "tough",
@@ -977,10 +978,12 @@ def main() -> int:
             "cardputer", "cardputer-adv",
         ],
         help=(
-            "Firmware variant. Defaults to cardputer-adv since that's the "
-            "hardware this rig provisions most often. Override for any "
-            "other board — flashing the wrong variant boot-loops the "
-            "device until it's re-flashed with the right one."
+            "Firmware variant. If omitted: native-USB boards default to "
+            "cardputer-adv (the hardware this rig provisions most often); "
+            "USB-UART-bridge boards are identified from their running "
+            "MicroPython build (currently recognizes Core2) and otherwise "
+            "must be given explicitly — flashing the wrong variant "
+            "boot-loops the device until it's re-flashed with the right one."
         ),
     )
     ap.add_argument(
@@ -1030,6 +1033,48 @@ def main() -> int:
             f"Found {info.get('chip', '?')} on {port} "
             f"(MAC {info.get('mac', '?')}, flash {info.get('flash_size', '?')})\n"
         )
+
+    # Pick the firmware variant when the user didn't. Native USB keeps
+    # the historical cardputer-adv default. A USB-UART bridge rules out
+    # the Cardputer family (native USB only), so ask the board's running
+    # MicroPython what it is rather than flash Cardputer firmware onto it.
+    if args.variant is None:
+        if native:
+            args.variant = "cardputer-adv"
+        else:
+            banner("IDENTIFY")
+            with Heartbeat("IDENTIFY"):
+                ident = identify.identify(port)
+            if ident["variant"]:
+                args.variant = ident["variant"]
+                sys.stderr.write(
+                    f"Identified {ident['machine']} → --variant {args.variant}\n"
+                )
+            elif args.skip_flash:
+                sys.stderr.write(
+                    "Could not identify the board; continuing without a "
+                    "variant since --skip-flash was given.\n"
+                )
+            else:
+                sys.stderr.write(
+                    "Could not identify the board on {} (machine: {}).\n"
+                    "It's on a USB-UART bridge, so it isn't a Cardputer or "
+                    "Cardputer-Adv (those use native USB).\n"
+                    "Re-run with --variant, e.g. --variant core2, basic-16mb, "
+                    "fire or tough.\n".format(port, ident["machine"] or "no REPL answer")
+                )
+                return 2
+
+    # Boards with their own port of the Buddy bundle get it in place of
+    # the Cardputer one when the caller asks for the generic "buddy".
+    if args.apps:
+        mapped = identify.bundle_for(args.apps, args.variant)
+        if mapped != args.apps:
+            sys.stderr.write(
+                f"Using the '{mapped}' app bundle for {args.variant} "
+                f"(the '{args.apps}' bundle needs the Cardputer keyboard).\n"
+            )
+            args.apps = mapped
 
     # Upfront notice for native-USB boards. The button dance is the only
     # interactive step in the flow and the one most likely to look like a

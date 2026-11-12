@@ -36,6 +36,8 @@ The rig this skill lives on provisions **Cardputer-Adv** boards overwhelmingly, 
 - If the user says "Cardputer" (no "Adv"), ask — the two models share a form factor but take different firmware images, and flashing the wrong one boot-loops the device.
 - If the user names any other board ("Core2", "CoreS3", "Basic", "Fire"), pass the matching `--variant` explicitly — the default won't apply.
 - The chip is ESP32-S3 either way, and `detect.py` won't be able to tell Cardputer from Cardputer-Adv before UIFlow is flashed (same native USB-JTAG VID, no pre-flash I2C probe). So this is a user-intent question, not a hardware-fingerprint one.
+- **USB-UART-bridge boards are identified automatically.** The cardputer-adv default only applies to native-USB ports. When the port is a CH9102/CP210x bridge and no `--variant` is given, `onboard.py` runs an IDENTIFY stage (`scripts/identify.py`) that asks the board's running MicroPython for its build name and maps it to a variant. Today it recognizes **Core2** (`sys.implementation._machine` contains "Core2"). If it can't identify the board (no UIFlow on it yet, or a model it doesn't know), it stops and asks for `--variant` rather than guess.
+- **Core2 gets its own Buddy bundle.** On a Core2, `--apps buddy` (and `install_apps.py --src buddy`) automatically installs `buddy-core2` instead — the Cardputer bundle's launcher needs the Cardputer keyboard. Pass `--apps buddy-core2` explicitly if identification isn't possible.
 
 ## The workflow
 
@@ -62,7 +64,14 @@ Users running `onboard.py` directly in their own terminal (not via Claude Code) 
 
 If `--port` is omitted, `detect.py` picks the most likely candidate across all three OSes: native-USB ESP32-S3 (`/dev/cu.usbmodem*` on macOS, `/dev/ttyACM*` on Linux, `COMx` on Windows), or a CH9102/CP210x UART bridge on older boards. Bluetooth-serial ports are filtered out. If multiple candidates are present, it asks.
 
-The known apps name `buddy` resolves to the `buddy/device/` directory in this repo (custom launcher + Hello + Claude Buddy BLE client + Snake). Any other `--apps` value is treated as a filesystem path.
+The known apps name `buddy` resolves to the `buddy/device/` directory in this repo (custom launcher + Hello + Claude Buddy BLE client + Snake). `buddy-core2` resolves to `buddy/device-core2/` (Core2 launcher + Claude Buddy only; shared BLE/protocol/state modules are symlinks into `buddy/device/`). Any other `--apps` value is treated as a filesystem path.
+
+Core2 end-to-end (no button dance — the UART bridge auto-resets into download mode):
+
+```
+python3 scripts/onboard.py --apps buddy            # identifies the Core2, picks core2 + buddy-core2
+python3 scripts/onboard.py --variant core2 --apps buddy-core2   # explicit, e.g. on a blank board
+```
 
 To skip re-flashing and just push (or refresh) the apps onto an already-provisioned device:
 
@@ -75,7 +84,7 @@ Where `<PORT>` is whatever `detect.py` printed on the last full run — for exam
 ### Stages
 
 1. **Detect** (`detect.py`) — enumerate serial ports, filter to USB-UART bridges (CH9102 vendor `0x1A86`, Silabs CP210x `0x10C4`, FTDI `0x0403`) or the ESP32-S3 native USB-JTAG interface (`0x303A`). Probe with esptool to confirm the chip. Port names differ per OS (`/dev/cu.usbmodem*` on macOS, `/dev/ttyACM*`/`ttyUSB*` on Linux, `COMx` on Windows) but pyserial abstracts that.
-2. **Identify** (`detect.py`) — alongside port discovery, `detect.py` reads the factory-test partition signature and/or scans I2C once UIFlow is on, and cross-references `references/hardware_signatures.md` to suggest the right firmware variant (Basic-16MB, Core2, CoreS3, Cardputer-Adv, etc.). User-facing variant choice happens via `onboard.py --variant`; there is no separate `detect.py --identify` flag.
+2. **Identify** (`identify.py`, UART-bridge boards with no `--variant` only) — interrupts the board's running MicroPython and reads its build name (`sys.implementation._machine`), then maps it to a firmware variant and app bundle. Conservative by design: only verified build names map (currently Core2); anything else returns no answer and `onboard.py` asks for `--variant`. `references/hardware_signatures.md` covers manual identification for the rest. Standalone: `python3 scripts/identify.py --port <PORT>`.
 3. **Fetch firmware** (`fetch_firmware.py`) — query the M5Burner manifest API and download the appropriate UIFlow 2.0 binary into the system temp dir. Cached between runs — safe to clear the cache anytime, it just re-downloads.
 4. **Flash** (`flash.py`) — `esptool write_flash 0x0 <image>` at **460800 baud** for UART bridges, `--no-stub` at 115200 baud for native-USB S3 devices. 921600 fails intermittently on the CH9102 bridge — do not increase it. Native-USB flash can intermittently throw `Lost connection, retrying` mid-erase; esptool recovers. The post-flash `watchdog-reset` teardown step can fail even when the flash itself succeeded — `flash.py` parses esptool's stdout, treats that specific failure pattern as non-fatal when `Hash of data verified` appeared, and `onboard.py` falls back to `flash.native_reset()` and then manual-RESET coaching if needed.
 5. **Install apps** (optional, `install_apps.py`) — paste-mode REPL upload of every `.py` from a source directory into `/flash/`, then reboot via `repl_reset` (DTR/RTS is a no-op on native USB — don't reach for it). Source layout: root `*.py` → `/flash/`, `apps/*.py` → `/flash/apps/` (UIFlow's stock launcher scans that). When the bundle ships a root `main.py`, `install_apps.py` also sets NVS `boot_option=2` so UIFlow's own launcher doesn't run and our `main.py` takes over the boot flow — critical for BLE-using apps on ESP32-S3 (see gotchas below).
@@ -110,12 +119,14 @@ Once `m5-onboard go` finishes at the `DONE` banner, the device is ready to use o
 - **Navigation.** Arrow keys (or the keyboard's trackpoint-style cursor keys) scroll the menu; Enter launches the highlighted app; ESC returns to the launcher from inside an app.
 - **Event WiFi auto-connect.** The bundle's `main.py` connects to a hard-coded event WiFi (SSID `cardputer`) on every boot and shows the result on the LCD before the launcher menu appears. Credentials live in `buddy/device/wifi_event.py`; the connect is best-effort and the launcher always continues even if the connect fails. If you're using this bundle outside the event, edit `wifi_event.py` or remove the `_connect_wifi_with_splash()` call from `main.py`.
 - **Claude Buddy over BLE.** First time only: in Claude Desktop, **Help → Troubleshooting → Enable Developer Tools** (one-time, persists across launches). Then **Developer menu → Hardware Buddy → Connect**. BLE works regardless of the WiFi state — the link to Claude.app is local.
+- **Core2 (`buddy-core2` bundle).** No WiFi auto-connect. The launcher uses the three touch buttons under the screen: A up, B open, C down. In Claude Buddy: A approve, B deny, hold C ~1 s to exit. The idle screen shows the BLE name to pick in Hardware Buddy. Short permission requests arrive with a `prompt` and are answered on the device (orange "Allow:" box). If Claude Desktop reports a request as waiting but sends no answerable `prompt` (observed for longer commands, ~70+ characters, and for question dialogs), the Core2 buzzes and shows a yellow "Waiting for approval — approve it in the Claude app" box with the tool call instead. Revert to stock UIFlow by setting NVS `uiflow.boot_option` back to 1 (see `buddy/device-core2/README.md`).
 - **Getting back to UIFlow.** The buddy bundle ships only a `main.py` at `/flash/` (no replacement `boot.py`), so the stock UIFlow `boot.py` is never touched and there's no `boot_uiflow.py` backup to restore. Revert by removing our `main.py` from the device REPL: `os.remove('/flash/main.py')` followed by `machine.reset()`. UIFlow's stock launcher takes over on the next boot. To start completely fresh including the firmware, re-run the skill without `--apps`.
 
 ## Files
 
 - `scripts/onboard.py` — main orchestrator
 - `scripts/detect.py` — port discovery + chip ID
+- `scripts/identify.py` — board model from the running MicroPython build name → firmware variant + Buddy bundle
 - `scripts/fetch_firmware.py` — M5Burner API + download
 - `scripts/flash.py` — esptool wrapper
 - `scripts/install_apps.py` — push a directory of `.py` files into `/flash/` via paste-mode REPL; backs up `boot.py` as `boot_uiflow.py` before overwriting; also writes the `boot_option` NVS key when the bundle ships a root `main.py`

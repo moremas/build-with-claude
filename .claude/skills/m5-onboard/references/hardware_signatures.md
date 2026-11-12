@@ -31,7 +31,7 @@ UIFlow is running, not the factory test's IMU detection.
 
 | Model   | ESP chip        | USB        | Distinctive I2C    | Firmware variant |
 |---------|-----------------|-------------|--------------------|------------------|
-| Core2   | ESP32-D0WDQ6-V3 | CH9102      | 0x34 (AXP192), 0x51 (BM8563 RTC), 0x38 (touch) | `core2` |
+| Core2   | ESP32-D0WDQ6-V3 | CH9102 (v1.1) or Silabs CP2104 (v1.0) | 0x34 (AXP192), 0x51 (BM8563 RTC), 0x38 (touch) | `core2` |
 | CoreS3  | ESP32-S3        | native USB  | 0x36 (AXP2101), 0x51, 0x38 | `cores3` |
 
 CoreS3 enumerates as its own USB vendor (`0x303A`) because it uses the
@@ -59,6 +59,20 @@ They are distinguished by manifest *name*, not version suffix:
 M5StickC Plus and StickC Plus2 also exist; this skill doesn't currently
 cover them. If support is needed, add variants to `fetch_firmware.py`
 and a new row here.
+
+## Automatic identification (`scripts/identify.py`)
+
+When a board on a USB-UART bridge is already running MicroPython,
+`identify.py` reads its build name (`sys.implementation._machine`) and
+maps it to a variant — no I2C scan needed. Verified build names:
+
+| `_machine` contains | Variant | Buddy bundle |
+|---------------------|---------|--------------|
+| `Core2` (e.g. `M5STACK Core2 with ESP32(SPIRAM)`, UIFlow 2.5.4) | `core2` | `buddy-core2` |
+
+Add a row to `_MACHINE_TO_VARIANT` in `identify.py` only after
+checking the build name on real hardware — an unrecognized name makes
+`onboard.py` ask for `--variant`, which is safer than a wrong flash.
 
 ## How the onboarder uses this
 

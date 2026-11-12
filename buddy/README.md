@@ -2,6 +2,8 @@
 
 MicroPython app bundle for the M5Stack Cardputer-Adv. Installed onto `/flash/` by the [`m5-onboard`](../onboard/) skill — see the [monorepo README](../README.md) for the end-to-end flow.
 
+For the **M5Stack Core2**, see [`device-core2/`](device-core2/README.md): its own launcher, UI and Claude Buddy app, sharing this bundle's `buddy_ble` / `buddy_protocol` / `buddy_state` / `buddy_chars` modules via symlinks.
+
 ## What's on the device
 
 ```

@@ -44,6 +44,17 @@ Done. Power the device on/off with the side switch.
 3. In Claude Desktop: **Help → Troubleshooting → Enable Developer Tools** (one-time, persists)
 4. Then **Developer menu → Hardware Buddy → Connect**
 
+## M5Stack Core2
+
+The Core2 is supported with its own Claude Buddy bundle in [`buddy/device-core2/`](buddy/device-core2/) — a touch-button launcher and a 320x240 Claude Buddy that reuse the Cardputer bundle's BLE, protocol and state modules. Plug it in and type `m5-onboard go` as usual:
+
+- If the Core2 is already running UIFlow 2.0, the skill **identifies it automatically**, flashes the Core2 firmware, and — when apps are requested — installs `buddy-core2` instead of the Cardputer bundle.
+- A blank Core2 can't be identified, so pass the variant: `python3 .claude/skills/m5-onboard/scripts/onboard.py --variant core2 --apps buddy-core2`.
+- Firmware only (no apps): leave off `--apps`.
+- No button dance: the Core2's USB-UART bridge resets itself into download mode.
+
+On the device: **A** up / **B** open / **C** down in the launcher; in Claude Buddy **A** approve, **B** deny, **hold C** to exit. See [`buddy/device-core2/README.md`](buddy/device-core2/README.md).
+
 ## Event WiFi
 
 The bundled launcher auto-connects to the event WiFi (`cardputer` / `cardconnect`) on every boot and displays the result on screen — `Connected · IP: 192.168.x.x` on success, `WiFi: offline` on failure (the launcher always continues either way). The credentials are intentionally checked into [`buddy/device/wifi_event.py`](buddy/device/wifi_event.py); the AP is publicly broadcast at the venue and the password is the published handout, so this is not a leaked secret. To use this bundle outside the event, edit `wifi_event.py` (replace `SSID`/`PASSWORD`) or remove the `_connect_wifi_with_splash()` call near the top of `main()` to disable the auto-connect entirely.
@@ -111,7 +122,7 @@ export M5_BUDDY_DIR=/path/to/buddy/device
 ## What's in this repo
 
 - **`.claude/skills/m5-onboard/`** — the Claude Code skill. Detect port, flash UIFlow, install apps. See [`.claude/skills/m5-onboard/SKILL.md`](.claude/skills/m5-onboard/SKILL.md) for the full playbook and every gotcha baked into the scripts.
-- **`buddy/`** — the MicroPython app bundle that gets installed. See [`buddy/README.md`](buddy/README.md) for device-side layout and iteration tooling.
+- **`buddy/`** — the MicroPython app bundle that gets installed. See [`buddy/README.md`](buddy/README.md) for device-side layout and iteration tooling. `buddy/device/` is the Cardputer-Adv bundle; `buddy/device-core2/` is the Core2 port.
 
 The two are decoupled by design: the `m5-onboard` skill can install any bundle via `--apps <path>`; `buddy` is just what ships here.
 

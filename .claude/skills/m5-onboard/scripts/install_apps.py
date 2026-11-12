@@ -254,6 +254,13 @@ def _upload_file(s, src_path: str, dest_path: str) -> None:
     out = _paste_or_raise(s, tail, settle=0.2, what="close {}".format(dest_path))
     # Same str()-not-repr() quirk as _ensure_dir — the device prints
     # "WROTE /flash/apps/claude_buddy.py" with no surrounding quotes.
+    # fp.close() flushes to flash and can occasionally take longer than
+    # the 0.2 s settle (seen on Core2 with an empty capture), so give the
+    # confirmation up to ~2 s more before calling it a failure.
+    for _ in range(4):
+        if ("WROTE " + dest_path) in out:
+            break
+        out += mpy_repl.drain(s, wait=0.5).decode("utf-8", errors="replace")
     if ("WROTE " + dest_path) not in out:
         raise RuntimeError("close/verify failed:\n" + out)
 
@@ -442,6 +449,9 @@ def _default_buddy_dir() -> str:
 _DEFAULT_BUDDY_DIR = _default_buddy_dir()
 KNOWN_BUNDLES = {
     "buddy": os.environ.get("M5_BUDDY_DIR") or _DEFAULT_BUDDY_DIR,
+    # Core2 port: own launcher/UI/app, shared BLE/protocol/state modules
+    # symlinked from buddy/device/.
+    "buddy-core2": os.path.join(os.path.dirname(_DEFAULT_BUDDY_DIR), "device-core2"),
 }
 
 
@@ -475,6 +485,21 @@ def main() -> int:
         help="Leave the device at the REPL after upload (skip the final reboot).",
     )
     args = ap.parse_args()
+
+    # "buddy" means "the Buddy bundle for this board": on boards with
+    # their own port (e.g. Core2) swap in that bundle, since the stock
+    # one needs the Cardputer keyboard. Explicit paths/names are kept.
+    if args.src == "buddy":
+        import identify
+        ident = identify.identify(args.port)
+        mapped = identify.bundle_for(args.src, ident["variant"])
+        if mapped != args.src:
+            sys.stderr.write(
+                "Identified {} → installing the '{}' bundle.\n".format(
+                    ident["machine"], mapped
+                )
+            )
+            args.src = mapped
 
     install(
         port=args.port,
