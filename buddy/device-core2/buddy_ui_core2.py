@@ -20,7 +20,7 @@ TL_DATUM by default on UIFlow 2.0):
     y=30       orange hairline
     y=31..201  main panel (idle / connected / passkey / unpair views)
                connected: queue line y=40, request box y=66..171
-    y=176      footer: today's tokens + battery (connected view only)
+    y=176      footer: session/today tokens + battery (connected view only)
     y=202      orange hairline
     y=203..239 hint strip: three labels centred over BtnA / BtnB / BtnC
 """
@@ -96,6 +96,19 @@ def _wrap(text, max_w, n):
         lines.append(line)
         rest = rest[len(line):].lstrip()
     return lines
+
+
+def _tok_short(n):
+    """Compact token count: 9,999 / 53.3k / 999.9k / 12.3M."""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return "?"
+    if n < 10000:
+        return "{:,}".format(n)
+    if n < 1000000:
+        return "{:.1f}k".format(n / 1000)
+    return "{:.1f}M".format(n / 1000000)
 
 
 def _right(pad, text):
@@ -489,17 +502,15 @@ class BuddyUI:
             _LCD.fillRect(label_x - 10, y, _W - 6 - (label_x - 10), _LINE_H, BLACK)
             _LCD.setTextColor(CREAM, BLACK)
             _LCD.drawString(label, label_x, y)
-        # Longest form that fits beside the battery label. Measured on
-        # hardware (DejaVu18): "Today: 10,000,000 tokens" is 229 px but
-        # only ~204 px is free next to "100% USB", so fall back to "tok"
-        # and then drop "Today:" rather than cutting letters off.
-        tok = "{:,}".format(self._last.get("tokens_today", 0))
-        room = label_x - 10 - 8
-        text = tok + " tok"
-        for cand in ("Today: " + tok + " tokens", "Today: " + tok + " tok"):
-            if _LCD.textWidth(cand) <= room:
-                text = cand
-                break
+        # "<session>/<today> tok", always in the compact form (8,397 /
+        # 53.3k / 15.0M) so it stays short and steady beside the battery
+        # label. Desktop's heartbeat "tokens" field is documented as
+        # "this turn" but looks like a running session count in
+        # practice; "tokens_today" is the day total.
+        text = "{}/{} tok".format(
+            _tok_short(self._last.get("tokens", 0)),
+            _tok_short(self._last.get("tokens_today", 0)),
+        )
         self._line("foot_l", text, 8, y, CYAN, right=label_x - 10)
 
     def _redraw_chrome(self):

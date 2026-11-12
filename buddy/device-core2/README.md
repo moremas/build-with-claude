@@ -37,6 +37,24 @@ python3 .claude/skills/m5-onboard/scripts/onboard.py --variant core2 --apps budd
 Installing sets NVS `uiflow.boot_option=2`, so the Core2 boots into
 `main.py` (this launcher) instead of UIFlow's own startup.
 
+## Screen
+
+Connected, top to bottom:
+
+- **Header** — "Claude Buddy" (or the name set from Claude Desktop) and
+  the link state (`WAITING` / `PAIRING` / `LINKED` / `OFF`).
+- **Queue** — `Running N  Waiting N  Total N` from Desktop's heartbeat.
+- **Request area** (four rows) — an orange **Allow:** box you can answer
+  with A/B, a yellow **Waiting for approval** box to answer in the app,
+  or Desktop's latest status message.
+- **Bottom row** — `<session>/<today> tok` (e.g. `8,397/53.3k tok`,
+  from the heartbeat's `tokens` and `tokens_today`) and the battery
+  (`100% USB` on USB power, `87%` on battery).
+- **Button labels** — Approve · Deny · Hold: exit.
+
+Level and approve/deny counts are still kept on the device and reported
+to Claude Desktop, but aren't shown on screen.
+
 ## Buttons
 
 | | BtnA (left) | BtnB (middle) | BtnC (right) |
