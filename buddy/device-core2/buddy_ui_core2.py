@@ -20,7 +20,7 @@ TL_DATUM by default on UIFlow 2.0):
     y=30       orange hairline
     y=31..201  main panel (idle / connected / passkey / unpair views)
                connected: queue line y=40, request box y=66..171
-    y=176      footer: session/today tokens + battery (connected view only)
+    y=176      footer: today's tokens + battery (connected view only)
     y=202      orange hairline
     y=203..239 hint strip: three labels centred over BtnA / BtnB / BtnC
 """
@@ -141,11 +141,7 @@ class BuddyUI:
         # waiting for approval but doesn't send an answerable "prompt"
         # (observed for longer commands, ~70+ chars, and question dialogs).
         self._last_tool = None
-        # Tool-call id of the latest tool_use, and the id we last buzzed
-        # for, so each new waiting request buzzes exactly once — even
-        # when "waiting" never drops to 0 between two requests.
-        self._last_tool_id = None
-        self._buzzed_tool_id = None
+        self._buzzed_prompt_id = None
         _LCD.fillScreen(BLACK)
         self._redraw_chrome()
 
@@ -195,7 +191,7 @@ class BuddyUI:
 
     def update_heartbeat(self, hb: dict):
         prev_pending = bool(self._prompt)
-        prev_in_app = self.waiting_in_app()
+        prev_waiting = self._count("waiting")
         self._last = hb
         self._prompt = hb.get("prompt")
         if self._showing_connected():
@@ -204,34 +200,41 @@ class BuddyUI:
             self._draw_main()
         if bool(self._prompt) != prev_pending:
             self.restore_button_hints()
-            if self._prompt:
-                self._buzz()
-        elif self.waiting_in_app():
-            self._buzz_for_waiting(newly_waiting=not prev_in_app)
+        # Buzz once per new request. Heartbeats are combined across all
+        # sessions, so key off things that only change when something
+        # new needs you: a prompt id we haven't seen, or the waiting
+        # count going up. (Tool calls from other, auto-approved
+        # sessions must not buzz.)
+        pid = self._prompt.get("id") if self._prompt else None
+        if pid is not None and pid != self._buzzed_prompt_id:
+            self._buzzed_prompt_id = pid
+            self._buzz()
+        elif pid is None and self._count("waiting") > prev_waiting:
+            self._buzz()
+
+    def _count(self, key) -> int:
+        try:
+            return int(self._last.get(key, 0) or 0)
+        except (TypeError, ValueError, AttributeError):
+            return 0
 
     def waiting_in_app(self) -> bool:
         """Desktop says something is waiting for approval, but sent no
         prompt we could answer — it has to be approved in the app."""
-        try:
-            waiting = int(self._last.get("waiting", 0) or 0)
-        except (TypeError, ValueError):
-            waiting = 0
-        return waiting > 0 and not self._prompt
+        return self._count("waiting") > 0 and not self._prompt
 
     def note_tool(self, name: str, summary: str, tool_id=None):
         """Record the latest tool call. State only, no drawing — safe to
         call from the BLE callback, so the "waiting" heartbeat that
-        follows a few ms later already sees the right tool and id."""
+        follows a few ms later already sees the right tool. ``tool_id``
+        is accepted for the caller's convenience but not used."""
         self._last_tool = (name or "?", summary or "")
-        if tool_id is not None:
-            self._last_tool_id = tool_id
 
     def refresh_waiting(self):
         """Main-loop follow-up to note_tool(): repaint the waiting box
-        with the new tool and buzz if this request hasn't buzzed yet."""
+        with the new tool (no buzz — see update_heartbeat)."""
         if self.waiting_in_app() and self._showing_connected():
             self._draw_connected_main()
-            self._buzz_for_waiting(newly_waiting=False)
 
     def _showing_connected(self) -> bool:
         """True when the connected view (not idle, not an overlay) is
@@ -241,14 +244,6 @@ class BuddyUI:
             and self._passkey is None
             and not self._unpair_prompt
         )
-
-    def _buzz_for_waiting(self, newly_waiting: bool):
-        """Buzz once per waiting request: on the 0 -> waiting edge, or
-        when a tool call we haven't buzzed for yet is the one waiting."""
-        tid = self._last_tool_id
-        if newly_waiting or (tid is not None and tid != self._buzzed_tool_id):
-            self._buzzed_tool_id = tid
-            self._buzz()
 
     def update_identity(self, name: str, owner: str):
         # No separate identity row on the Core2: a custom name replaces
@@ -431,14 +426,24 @@ class BuddyUI:
                 (line, CREAM) for line in hint
             )
         elif self.waiting_in_app():
-            tool = ""
-            if self._last_tool:
-                name, summary = self._last_tool
-                tool = name + (": " + summary if summary else "")
             kind, border = "waiting", YELLOW
-            rows = (("Waiting for approval", YELLOW),) + tuple(
-                (line, CREAM) for line in _wrap(tool, _W - 24, 2)
-            ) + (("Approve it in the Claude app", GRAY_MID),)
+            waiting = self._count("waiting")
+            running = self._count("running")
+            if running <= 1 and waiting == 1:
+                # One session (a session waiting on you still counts as
+                # running), so the latest tool call is the one waiting.
+                tool = ""
+                if self._last_tool:
+                    name, summary = self._last_tool
+                    tool = name + (": " + summary if summary else "")
+                middle = tuple((line, CREAM) for line in _wrap(tool, _W - 24, 2))
+                title = "Waiting for approval"
+            else:
+                # Several sessions: the latest tool call may belong to a
+                # different session than the one waiting, so don't guess.
+                middle = (("{} sessions running".format(running), CREAM), ("", CREAM))
+                title = "{} waiting for approval".format(waiting)
+            rows = ((title, YELLOW),) + middle + (("Approve in the Claude app", GRAY_MID),)
         else:
             kind, border = "msg", None
             rows = ((hb.get("msg", ""), GRAY_MID),) + (("", GRAY_MID),) * 3
@@ -502,15 +507,12 @@ class BuddyUI:
             _LCD.fillRect(label_x - 10, y, _W - 6 - (label_x - 10), _LINE_H, BLACK)
             _LCD.setTextColor(CREAM, BLACK)
             _LCD.drawString(label, label_x, y)
-        # "<session>/<today> tok", always in the compact form (8,397 /
-        # 53.3k / 15.0M) so it stays short and steady beside the battery
-        # label. Desktop's heartbeat "tokens" field is documented as
-        # "this turn" but looks like a running session count in
-        # practice; "tokens_today" is the day total.
-        text = "{}/{} tok".format(
-            _tok_short(self._last.get("tokens", 0)),
-            _tok_short(self._last.get("tokens_today", 0)),
-        )
+        # Today's output tokens ("tokens_today": since local midnight,
+        # per the Hardware Buddy reference), compact form (8,397 /
+        # 53.3k / 15.0M) so it always fits beside the battery label.
+        # The heartbeat's other count, "tokens", is cumulative since
+        # Claude Desktop started — not shown.
+        text = "Today: {} tokens".format(_tok_short(self._last.get("tokens_today", 0)))
         self._line("foot_l", text, 8, y, CYAN, right=label_x - 10)
 
     def _redraw_chrome(self):

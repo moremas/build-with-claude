@@ -47,8 +47,8 @@ Connected, top to bottom:
 - **Request area** (four rows) — an orange **Allow:** box you can answer
   with A/B, a yellow **Waiting for approval** box to answer in the app,
   or Desktop's latest status message.
-- **Bottom row** — `<session>/<today> tok` (e.g. `8,397/53.3k tok`,
-  from the heartbeat's `tokens` and `tokens_today`) and the battery
+- **Bottom row** — `Today: 53.3k tokens` (the heartbeat's
+  `tokens_today`: output tokens since local midnight) and the battery
   (`100% USB` on USB power, `87%` on battery).
 - **Button labels** — Approve · Deny · Hold: exit.
 
@@ -85,9 +85,16 @@ Code sessions in Claude Desktop: Bash requests with short commands
 `"waiting": 1` but no `"prompt"`. The device link uses the default
 20-byte BLE payload (the app doesn't request a larger MTU), which may
 be why Desktop leaves larger prompts out — untested. Without a request
-id there is nothing to answer, so the device buzzes once per request
-and shows a yellow **Waiting for approval** box with the tool call
-(taken from Desktop's `evt` stream) and "Approve it in the Claude app".
+id there is nothing to answer, so the device shows a yellow **Waiting
+for approval** box and "Approve in the Claude app". With one session
+running it also shows the tool call (taken from Desktop's `evt`
+stream); with several, it shows "N waiting for approval" and how many
+sessions are running instead, since the latest tool call may belong to
+a different session than the one waiting.
+
+Heartbeats are combined across all sessions, so the device buzzes once
+when the waiting count goes up or a prompt with a new id arrives — not
+on tool calls, which other (auto-approved) sessions also send.
 
 ## Debugging what Desktop sends
 
