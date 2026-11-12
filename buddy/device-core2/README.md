@@ -102,12 +102,12 @@ Claude Desktop polls `{"cmd":"status"}` every couple of seconds for the
 Hardware Buddy window's stats panel. The Core2 app answers in the shape
 the [Hardware Buddy reference](https://github.com/anthropics/claude-desktop-buddy/blob/main/REFERENCE.md)
 specifies — `{"ack":"status","ok":true,"data":{name, sec, bat, sys, stats}}`
-— with `bat.mA` negative while charging, and `stats.vel` as the median
-seconds you took to approve the last 8 requests answered on the device
-(kept in NVS; 0 until the first one). It does this with a small
-`_Protocol` subclass in `apps/claude_buddy.py`; the shared
-`buddy_protocol.py` (and so the Cardputer bundle) still sends the
-older shape — see `../README.md` for the gap and the planned fix.
+— with `bat.mA` negative while charging. Velocity isn't supported for
+now: `stats.vel` is always 0 ("no data" in the reference), so Desktop
+shows `--s`. It does this with a small `_Protocol` subclass in
+`apps/claude_buddy.py`; the shared `buddy_protocol.py` (and so the
+Cardputer bundle) still sends the older shape — see `../README.md` for
+the gap and the planned fix.
 
 `stats.deny` counts only denials pressed on the device (B); requests
 denied in the Claude app never reach it. `stats.nap` (idle periods,

@@ -119,9 +119,10 @@ stats: {appr, deny, vel, nap, lvl}
 > The shared `buddy_protocol.py` sends these at the top level of the
 > ack. The [Hardware Buddy reference](https://github.com/anthropics/claude-desktop-buddy/blob/main/REFERENCE.md)
 > wraps them — `{"ack":"status","ok":true,"data":{...}}` — and defines
-> `vel` as median seconds-to-approve and `bat.mA` as negative while
-> charging. The Core2 app follows the reference; the Cardputer doesn't
-> yet. See `buddy/README.md` → "Status reply differs from the Hardware
+> `vel` as median seconds-to-approve (0 = no data) and `bat.mA` as
+> negative while charging. The Core2 app sends the reference envelope
+> and `bat.mA` sign, with `vel` always 0 (not supported yet); the
+> Cardputer doesn't yet. See `buddy/README.md` → "Status reply differs from the Hardware
 > Buddy reference".
 
 ## Timing

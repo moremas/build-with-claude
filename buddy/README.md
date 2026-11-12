@@ -39,13 +39,14 @@ so the panel shows less than it could:
 | `stats.nap` | cumulative seconds napping | count of idle periods |
 | `stats.lvl` | from output tokens (50K per level) | from approve + deny count |
 
-The Core2 bundle already sends the reference envelope, `vel`, and
-`bat.mA` sign — see the `_Protocol` subclass in
+The Core2 bundle already sends the reference envelope and `bat.mA`
+sign, and reports `vel` as 0 (velocity not supported yet) — see the
+`_Protocol` subclass in
 [`device-core2/apps/claude_buddy.py`](device-core2/apps/claude_buddy.py)
 and [`device-core2/README.md`](device-core2/README.md#status-reply).
-**Enhancement:** move that envelope and `vel` logic into the shared
-`buddy_protocol.py` / `buddy_state.py` so the Cardputer returns the
-same data (then drop the Core2 subclass), and test on a Cardputer.
+**Enhancement:** move that envelope (and `vel` = 0) into the shared
+`buddy_protocol.py` so the Cardputer returns the same data (then drop
+the Core2 subclass), and test on a Cardputer.
 `nap` and `lvl` are pet-related and intentionally left as-is on both devices for now.
 
 ## Iterating on device code
